@@ -503,6 +503,8 @@ pub const FORMATS: &[Format] = &[
     reader("pxr", "Pixar", &["pxr"], "image/x-pixar", true),
     // JP2 and raw codestreams are decoded to PNG; JPX composition is not supported.
     reader("jpeg2000", "JPEG 2000", &["jpf", "jpx", "jp2", "j2k", "j2c", "jpc"], "image/jp2", true),
+    // CorelDRAW drawings saved as a ZIP package, read by `vectorcraft-cdr`; never written.
+    reader("cdr", "CorelDRAW", &["cdr"], "application/x-vnd.corel.zcf.draw.document+zip", false),
 ];
 
 /// Every extension `document.open` reads (the "All readable files" filter of open dialogs).
@@ -550,6 +552,7 @@ pub const OPEN_EXTS: &[&str] = &[
     "af",
     "afdesign",
     "afpub",
+    "cdr",
 ];
 
 /// Extensions in [`OPEN_EXTS`] the packaging declares no type for: Photoshop documents belong to
@@ -557,8 +560,10 @@ pub const OPEN_EXTS: &[&str] = &[
 /// `.epsf`, `.ps`, Targa, PCX, Pixar or JPEG 2000 type, nor one for the `.pns`, `.dib` and `.rle` names of
 /// PNG and BMP files (File › Open and Place still read them all). On Linux the desktop entry's EPS
 /// type (shared-mime-info's) also covers `.epsf`, so file managers offer VectorCraft for it.
-pub const UNASSOCIATED_EXTS: &[&str] =
-    &["psd", "pdd", "psb", "epsf", "ps", "pns", "dib", "rle", "tga", "vda", "icb", "vst", "pcx", "pxr", "jpf", "jpx", "jp2", "j2k", "j2c", "jpc"];
+/// CorelDRAW `.cdr` isn't declared either while only part of a drawing imports.
+pub const UNASSOCIATED_EXTS: &[&str] = &[
+    "psd", "pdd", "psb", "epsf", "ps", "pns", "dib", "rle", "tga", "vda", "icb", "vst", "pcx", "pxr", "jpf", "jpx", "jp2", "j2k", "j2c", "jpc", "cdr",
+];
 
 /// The extension that picks each writable format when exporting (the format's first; PNG-8 shares
 /// `.png` with PNG, so `.png` comes once), in [`FORMATS`] order.
@@ -634,6 +639,7 @@ pub const PLACE_EXTS: &[&str] = &[
     "af",
     "afdesign",
     "afpub",
+    "cdr",
     "txt",
     "rtf",
     "docx",

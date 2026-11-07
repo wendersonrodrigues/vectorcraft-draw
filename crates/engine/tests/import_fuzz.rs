@@ -6258,3 +6258,60 @@ proptest! {
         prop_assert!(!notes.iter().any(|n| n.contains("art this can't read")), "the records aren't art: {:?}", notes);
     }
 }
+
+// ---------- CorelDRAW ----------
+
+/// A synthetic CorelDRAW package (`vectorcraft_cdr::synth`, a test builder, not an exporter)
+/// with a curve, a rectangle, a group, a fountain fill, an outline and text.
+fn cdr_sample() -> Vec<u8> {
+    use vectorcraft_cdr::synth::{curve, list, loda, object, rectangle, simple, style};
+    let id = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0];
+    let solid = style(
+        r#"{"fill":{"type":"1","primaryColor":"RGB255,USER,255,180,0,100,0"},"outline":{"width":"25400","color":"CMYK,USER,0,0,0,100,100,0"}}"#,
+    );
+    let fountain = style(
+        r#"{"transparency":{"uniformTransparency":"0.5"},"fill":{"type":"2","fountainType":"2","primaryColor":"RGB255,USER,0,6,114,100,0","secondaryColor":"RGB255,USER,0,117,255,100,0","xCenterOffset":"10"}}"#,
+    );
+    let nodes = [(0, 0, 0x0c), (100_000, 0, 0xc0), (200_000, 100_000, 0xc0), (200_000, 200_000, 0x84), (0, 200_000, 0x48)];
+    simple(vec![
+        object(loda(4, &[]), id),
+        list(b"grp ", vec![object(loda(3, &[(0x1e, curve(&nodes)), (0xc9, solid)]), id)]),
+        object(loda(1, &[(0x1e, rectangle(3_000_000.0, -2_000_000.0)), (0xc9, fountain)]), [0.5, 0.0, -1_000_000.0, 0.0, 0.5, 1_000_000.0]),
+    ])
+}
+
+#[test]
+fn the_cdr_sample_opens_as_editable_art() {
+    let l = vectorcraft_engine::cmd::fileio::load("x.cdr", &cdr_sample()).unwrap();
+    assert_eq!(l.doc.artboards.len(), 1);
+    let all = format!("{:?}", l.doc.layers);
+    for want in ["Path", "Group", "Gradient"] {
+        assert!(all.contains(want), "{want} missing");
+    }
+    assert!(l.warnings.iter().any(|w| w.contains("text")), "{:?}", l.warnings);
+    // Detected by its content, whatever the name says.
+    assert!(vectorcraft_engine::cmd::fileio::load("x.bin", &cdr_sample()).is_ok());
+}
+
+proptest! {
+    #![proptest_config(config())]
+
+    #[test]
+    fn cdr_packages_with_mutated_bytes_render_and_export(
+        cut in 0usize..8192,
+        edits in prop::collection::vec((0usize..8192, any::<u8>()), 0..24),
+    ) {
+        let mut bytes = cdr_sample();
+        let n = bytes.len();
+        for (at, b) in edits { bytes[at % n] = b; }
+        bytes.truncate(cut.max(64));
+        survive("CorelDRAW package", || vectorcraft_engine::cmd::fileio::load("x.cdr", &bytes).ok().map(|l| l.doc))?;
+    }
+
+    #[test]
+    fn cdr_garbage_never_panics(tail in prop::collection::vec(any::<u8>(), 0..2048), riff in any::<bool>()) {
+        let mut bytes = if riff { b"RIFF\0\0\0\0CDRP".to_vec() } else { cdr_sample()[..90].to_vec() };
+        bytes.extend(tail);
+        survive("CorelDRAW garbage", || vectorcraft_engine::cmd::fileio::load("x.cdr", &bytes).ok().map(|l| l.doc))?;
+    }
+}

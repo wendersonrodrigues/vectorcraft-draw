@@ -1,0 +1,18 @@
+[package]
+name = "vectorcraft-cdr"
+description = "Bounded reader for CorelDRAW documents (.cdr): container, chunk tree and the vector subset VectorCraft imports"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+# Synthetic-file builders for tests and fuzz seeds; not a CorelDRAW exporter.
+synth = []
+
+[dependencies]
+flate2 = { workspace = true }
+serde_json = { workspace = true }
