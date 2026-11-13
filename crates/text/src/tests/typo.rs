@@ -1947,3 +1947,16 @@ fn soft_return_breaks_line_even_inside_no_break() {
     let lay = layout(db(), &t);
     assert_eq!(lay.lines.len(), 2, "soft return honors line break despite no_break");
 }
+
+/// The Windows line height comes from the OS/2 table's usWinAscent and usWinDescent, not from the
+/// ascent and descent the layout uses.
+#[test]
+fn win_line_height_reads_the_os2_windows_metrics() {
+    use crate::test_fonts::{WIN_FAMILY, win_metrics_font};
+    let db = FontDb::with_font_dirs(vec![]);
+    db.add_font(win_metrics_font().unwrap());
+    let face = db.face(WIN_FAMILY, "Regular").unwrap();
+    assert_eq!(face.win_line_height(), Some(1361.0));
+    let (ascent, descent) = face.vertical_metrics();
+    assert!((ascent + descent - 1326.0).abs() < 1.0, "the layout's metrics are unchanged: {ascent} + {descent}");
+}

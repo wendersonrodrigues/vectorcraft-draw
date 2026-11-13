@@ -6264,7 +6264,9 @@ proptest! {
 /// A synthetic CorelDRAW package (`vectorcraft_cdr::synth`, a test builder, not an exporter)
 /// with a curve, a rectangle, a group, a fountain fill, an outline, a bitmap with a mask and text.
 fn cdr_sample() -> Vec<u8> {
-    use vectorcraft_cdr::synth::{bitmap_record, curve, image, layer, leaf, list, loda, mcfg, object, package, page, rectangle, style};
+    use vectorcraft_cdr::synth::{
+        bitmap_record, curve, image, layer, leaf, list, loda, mcfg, object, package, page, rectangle, style, text_object, txsm,
+    };
     let id = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0];
     let solid = style(
         r#"{"fill":{"type":"1","primaryColor":"RGB255,USER,255,180,0,100,0"},"outline":{"width":"25400","color":"CMYK,USER,0,0,0,100,100,0"}}"#,
@@ -6283,7 +6285,17 @@ fn cdr_sample() -> Vec<u8> {
             0,
             "Layer 1",
             vec![
-                object(loda(4, &[]), id),
+                text_object(
+                    txsm(
+                        &[
+                            r#"{"character":{"latin":{"font":"Barlow Medium","weight":"256","size":"254000"},"fill":{"type":"1","primaryColor":"RGB255,USER,0,22,131,100,0"}},"paragraph":{"interLineSpacing":"560000","interCharSpacing":"-40000"}}"#,
+                            r#"{"character":{"latin":{"weight":"4096"}}}"#,
+                        ],
+                        b"m\xeas\rok",
+                        &[0, 0, 1, 1, 1, 1],
+                    ),
+                    [1.0, 0.0, 0.0, 0.0, 1.0, 3_000_000.0],
+                ),
                 object(loda(5, &[(0x1e, image([0, 2_000_000, 1_000_000, 0], 2, 2, 6))]), id),
                 list(b"grp ", vec![object(loda(3, &[(0x1e, curve(&nodes)), (0xc9, solid)]), id)]),
                 object(loda(1, &[(0x1e, rectangle(3_000_000.0, -2_000_000.0)), (0xc9, fountain)]), [0.5, 0.0, -1_000_000.0, 0.0, 0.5, 1_000_000.0]),
@@ -6298,10 +6310,10 @@ fn the_cdr_sample_opens_as_editable_art() {
     assert_eq!(l.doc.artboards.len(), 1);
     let all = format!("{:?}", l.doc.layers);
     assert_eq!(l.doc.images.len(), 1, "the bitmap is embedded");
-    for want in ["Path", "Group", "Gradient", "Image"] {
+    for want in ["Path", "Group", "Gradient", "Image", "Text"] {
         assert!(all.contains(want), "{want} missing");
     }
-    assert!(l.warnings.iter().any(|w| w.contains("text")), "{:?}", l.warnings);
+    assert!(all.contains("mê") && all.contains("ok"), "the text's characters are read");
     // Detected by its content, whatever the name says.
     assert!(vectorcraft_engine::cmd::fileio::load("x.bin", &cdr_sample()).is_ok());
 }

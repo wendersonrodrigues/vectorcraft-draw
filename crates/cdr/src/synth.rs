@@ -280,3 +280,38 @@ pub fn image(ltrb: [i32; 4], width: i32, height: i32, id: i32) -> Vec<u8> {
     out.resize(125, 0);
     out
 }
+
+/// A `txsm` chunk: a header of zeros, `styles` (JSON, the first the base style) each followed
+/// by a language tag but the last, then `text` (Windows-1252 bytes) with each character's style index.
+pub fn txsm(styles: &[&str], text: &[u8], style_of: &[u16]) -> Vec<u8> {
+    let mut out = vec![0u8; 0x73];
+    for (i, s) in styles.iter().enumerate() {
+        out.extend_from_slice(&(s.len() as u32).to_le_bytes());
+        out.extend_from_slice(s.as_bytes());
+        // Every style but the last is followed by a language tag; the characters follow the last.
+        if i + 1 < styles.len() {
+            out.extend_from_slice(&[2, 0, 0, 0, 12, 0, 0, 0, 4, 0, 3, 0, 0, 0, b'P', 0, b'T', 0, b'B', 0]);
+        }
+    }
+    out.extend_from_slice(&(text.len() as u32).to_le_bytes());
+    for i in 0..text.len() {
+        out.extend_from_slice(&[0, 0]);
+        out.extend_from_slice(&style_of.get(i).copied().unwrap_or(0).to_le_bytes());
+        out.extend_from_slice(&[0; 4]);
+    }
+    out.extend_from_slice(&(text.len() as u32).to_le_bytes());
+    out.extend_from_slice(text);
+    out.extend_from_slice(&[0; 5]);
+    out
+}
+
+/// A text object: its argument table, transform and `txsm`.
+pub fn text_object(txsm_: Vec<u8>, m: [f64; 6]) -> Chunk {
+    list(
+        b"obj ",
+        vec![
+            list(b"lgob", vec![leaf(b"loda", loda(4, &[(0x1e, vec![0, 0, 0, 0, 0x46, 0, 0, 0])])), list(b"trfl", vec![leaf(b"trfd", trfd(m))])]),
+            leaf(b"txsm", txsm_),
+        ],
+    )
+}

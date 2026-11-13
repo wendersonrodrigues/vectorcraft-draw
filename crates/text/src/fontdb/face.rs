@@ -278,6 +278,15 @@ impl FontFace {
     pub fn vertical_metrics(&self) -> (f64, f64) {
         (self.ascent, self.descent)
     }
+    /// The line height Windows applications space lines by: the OS/2 table's `usWinAscent` plus
+    /// `usWinDescent`, in font units (<https://learn.microsoft.com/en-us/typography/opentype/spec/os2>).
+    /// `None` when the font has no OS/2 table or both are 0.
+    pub fn win_line_height(&self) -> Option<f64> {
+        use skrifa::raw::TableProvider;
+        let os2 = self.skrifa()?.os2().ok()?;
+        let h = f64::from(os2.us_win_ascent()) + f64::from(os2.us_win_descent());
+        (h > 0.0).then_some(h)
+    }
     /// The height of the lowercase letters in font units, positive (estimated from the ascent
     /// when the font has no OS/2 value).
     pub fn x_height(&self) -> f64 {

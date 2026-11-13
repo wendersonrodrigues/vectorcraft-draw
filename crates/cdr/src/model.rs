@@ -20,6 +20,7 @@ use crate::args::{Args, kind, object};
 use crate::bitmap::{self, Bitmap};
 use crate::package::{Package, is_legacy_riff};
 use crate::riff::{self, Node};
+use crate::text::{self, Text};
 use crate::{Error, Limits, style};
 
 /// Units in an inch (see the module documentation).
@@ -89,6 +90,14 @@ pub enum Kind {
     /// pixel step right and down moving by `x` and `y` (all in page points).
     Image {
         bitmap: usize,
+        origin: Point,
+        x: Point,
+        y: Point,
+    },
+    /// Point text: text space (points, y down, the first baseline's start at (0, 0)) maps to the
+    /// page with (0, 0) at `origin` and a step of one point right and down moving by `x` and `y`.
+    Text {
+        text: Text,
         origin: Point,
         x: Point,
         y: Point,
@@ -336,8 +345,24 @@ impl<'t, 'a> Builder<'t, 'a> {
                 vec![(0.0, 0.0, 0x0c), (w, 0.0, 0x40), (w, h, 0x40), (0.0, h, 0x48)]
             }
             (object::TEXT, _) => {
-                self.warnings.add("text");
-                return Ok(None);
+                let Some(t) = obj.leaf(b"txsm") else {
+                    self.warnings.add("text without its characters");
+                    return Ok(None);
+                };
+                return Ok(match text::read(t, UNITS_PER_POINT) {
+                    Ok(text) if text.runs.iter().any(|r| !r.text.trim().is_empty()) => {
+                        let origin = self.to_page(m, 0.0, 0.0);
+                        let step = |p: Point| Point { x: p.x - origin.x, y: p.y - origin.y };
+                        let x = step(self.to_page(m, UNITS_PER_POINT, 0.0));
+                        let y = step(self.to_page(m, 0.0, -UNITS_PER_POINT));
+                        Some(Object { kind: Kind::Text { text, origin, x, y }, fill: None, outline: None, opacity, clipped: Vec::new() })
+                    }
+                    Ok(_) => None,
+                    Err(e) => {
+                        self.warnings.add(&format!("text that couldn't be read ({e})"));
+                        None
+                    }
+                });
             }
             (object::BITMAP, Some(g)) => {
                 return Ok(self.image(g, m).map(|kind| Object { kind, fill: None, outline: None, opacity, clipped: Vec::new() }));

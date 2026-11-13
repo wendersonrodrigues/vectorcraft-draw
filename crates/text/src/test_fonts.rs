@@ -334,6 +334,33 @@ fn heights_font(family: &str, heights: Option<(i16, i16)>, base: bool) -> Option
     Some(builder.build())
 }
 
+/// The family of [`win_metrics_font`].
+pub const WIN_FAMILY: &str = "Wintest Sans";
+
+/// The bundled Source Sans 3 Regular as family [`WIN_FAMILY`], with usWinAscent 1112 and
+/// usWinDescent 249 in its OS/2 table (its ascent and descent elsewhere unchanged, 1000 and 326).
+/// `None` when it can't be built.
+pub fn win_metrics_font() -> Option<Vec<u8>> {
+    const BASE: &[u8] = include_bytes!("../../../assets/fonts/SourceSans3-Regular.ttf");
+    let font = skrifa::FontRef::new(BASE).ok()?;
+    let name = name_table(&[(1, WIN_FAMILY), (2, "Regular"), (4, "Wintest Sans Regular"), (6, "WintestSans-Regular")])?;
+    let mut builder = FontBuilder::new();
+    builder.add_raw(Tag::new(b"name"), name);
+    for r in font.table_directory.table_records() {
+        let tag = Tag::new(&r.tag().to_be_bytes());
+        if builder.contains(tag) {
+            continue;
+        }
+        let mut data = font.table_data(r.tag())?.as_bytes().to_vec();
+        if tag == Tag::new(b"OS/2") {
+            // usWinAscent and usWinDescent, at bytes 74 and 76.
+            data.get_mut(74..78)?.copy_from_slice(&[1112_u16.to_be_bytes(), 249_u16.to_be_bytes()].concat());
+        }
+        builder.add_raw(tag, data);
+    }
+    Some(builder.build())
+}
+
 /// The family of [`vertical_punctuation_font`].
 pub const VERTICAL_PUNCTUATION_FAMILY: &str = "Punctuationtest Sans";
 

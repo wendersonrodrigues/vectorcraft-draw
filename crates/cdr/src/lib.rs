@@ -21,6 +21,7 @@ mod riff;
 mod style;
 #[cfg(any(test, feature = "synth"))]
 pub mod synth;
+pub mod text;
 
 pub use model::{Document, read};
 pub use package::{MIMETYPE, is_cdr, is_legacy_riff};

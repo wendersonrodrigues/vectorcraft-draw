@@ -104,7 +104,7 @@ fn fountain_fills_keep_both_colours() {
 fn text_and_bitmaps_are_reported() {
     let f = synth::simple(vec![object(loda(4, &[]), ID), object(loda(5, &[]), ID), object(loda(5, &[]), ID)]);
     let d = read(&f, Limits::default()).unwrap();
-    assert!(d.warnings.contains(&"text".to_string()), "{:?}", d.warnings);
+    assert!(d.warnings.contains(&"text without its characters".to_string()), "{:?}", d.warnings);
     assert!(d.warnings.contains(&"bitmaps whose placement couldn't be read (2)".to_string()), "{:?}", d.warnings);
 }
 
@@ -247,4 +247,48 @@ fn hostile_bitmaps_never_panic() {
             let _ = read(&g, Limits::default());
         }
     }
+}
+
+const BASE_STYLE: &str = r#"{"character":{"latin":{"font":"Barlow","weight":"64","italic":"0","size":"254000"},"fill":{"type":"1","primaryColor":"RGB255,USER,0,22,131,100,0"}},"paragraph":{"interLineSpacing":"560000","interCharSpacing":"-40000"}}"#;
+const BOLD_WHITE: &str = r#"{"character":{"latin":{"weight":"4096"},"fill":{"type":"1","primaryColor":"RGB255,USER,255,255,255,100,0"}}}"#;
+
+#[test]
+fn text_runs_take_their_character_styles() {
+    use synth::{text_object, txsm};
+    let t = txsm(&[BASE_STYLE, "{\"character\":{}}", BOLD_WHITE], b"m\xeas\rok", &[0, 0, 2, 2, 2, 2]);
+    let d = read(&synth::simple(vec![text_object(t, [1.0, 0.0, 1_000.0, 0.0, 1.0, 2_000.0])]), Limits::default()).unwrap();
+    assert!(d.warnings.is_empty(), "{:?}", d.warnings);
+    let p = &d.pages[0];
+    let Kind::Text { text, origin, x, y } = &p.layers[0].objects[0].kind else { panic!("not text") };
+    assert_eq!(text.runs.len(), 2);
+    assert_eq!(text.runs[0].text, "mê");
+    assert_eq!(text.runs[1].text, "s\nok", "\\r ends a paragraph");
+    assert_eq!((text.runs[0].font.as_str(), text.runs[0].weight, text.runs[1].weight), ("Barlow", 400, 700));
+    assert_eq!(text.runs[1].font, "Barlow", "an override keeps the base's other members");
+    assert!((text.runs[0].size - 72.0).abs() < 1e-9, "254000 units are an inch");
+    assert_eq!(text.runs[1].fill, Some(Fill::Solid(Color::Rgb(1.0, 1.0, 1.0))));
+    assert!((text.line_spacing - 0.56).abs() < 1e-12 && (text.tracking + 10.0).abs() < 1e-12);
+    // The first baseline starts at the object's origin; text space is y down in points.
+    assert!((origin.x - (p.width / 2.0 + 1_000.0 / PT)).abs() < 1e-9 && (origin.y - (p.height / 2.0 - 2_000.0 / PT)).abs() < 1e-9);
+    assert!((x.x - 1.0).abs() < 1e-9 && (y.y - 1.0).abs() < 1e-9 && x.y.abs() < 1e-12 && y.x.abs() < 1e-12);
+}
+
+#[test]
+fn hostile_text_never_panics() {
+    use synth::{text_object, txsm};
+    let f = synth::simple(vec![text_object(txsm(&[BASE_STYLE, BOLD_WHITE], b"abc", &[0, 1, 9]), ID)]);
+    for i in 0..f.len() {
+        for v in [0x00, 0x7b, 0xff] {
+            let mut g = f.clone();
+            g[i] = v;
+            let _ = read(&g, Limits::default());
+        }
+    }
+    // A chunk full of braces after plausible lengths stays bounded.
+    let mut t = vec![0u8; 8];
+    for _ in 0..20_000 {
+        t.extend_from_slice(&1_000_000u32.to_le_bytes());
+        t.push(b'{');
+    }
+    let _ = read(&synth::simple(vec![text_object(t, ID)]), Limits::default());
 }

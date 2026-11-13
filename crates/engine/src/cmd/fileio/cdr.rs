@@ -1,8 +1,9 @@
-//! CorelDRAW documents (`.cdr`): the pages, layers, groups, PowerClips, curves, rectangles and
+//! CorelDRAW documents (`.cdr`): the pages, layers, groups, PowerClips, curves, rectangles, text and
 //! bitmaps that `vectorcraft-cdr` reads, with their solid and fountain fills, outlines and
 //! transparency, as editable VectorCraft art; bitmaps are embedded as PNG. Each page becomes an
 //! artboard, side by side 36 pt apart; layers of the same name on different pages become one
-//! layer. Whatever the reader leaves out (text, other objects) is listed in the warnings.
+//! layer; text becomes point type in the fonts it names. Whatever the reader leaves out is listed
+//! in the warnings.
 
 use std::io::Cursor;
 
@@ -13,6 +14,7 @@ use vectorcraft_cdr::model::{self as cd, Fill, Kind, Segment};
 use vectorcraft_color::{Color, Gradient, GradientGeom, GradientKind, GradientPaint, GradientStop, Paint};
 use vectorcraft_doc::appearance::{Appearance, AppearanceItem, FillLayer, StrokeLayer};
 use vectorcraft_doc::geom::{FillRule, PathData};
+use vectorcraft_doc::text::{CharStyle, ParaStyle, TextObject, TextRun};
 use vectorcraft_doc::{Artboard, Document, ImageObject, LayerColor, Node, NodeKind};
 
 use super::load::err;
@@ -149,9 +151,74 @@ impl Builder {
                 let image = ImageObject { key, width, height, xf, link: None, placement: Default::default(), pixels: None };
                 Node::new(self.doc.alloc_id(), NodeKind::Image(Box::new(image)))
             }
+            Kind::Text { text, origin, x, y } => {
+                let xf = Affine::new([x.x, x.y, y.x, y.y, origin.x + dx, origin.y]);
+                if !xf.as_coeffs().iter().all(|v| v.is_finite()) {
+                    return None;
+                }
+                let mut obj = TextObject::point(Point::ZERO, "", CharStyle::default());
+                obj.runs = text.runs.iter().map(|r| TextRun::new(r.text.clone(), self.char_style(r, text.tracking))).collect();
+                // The last paragraph has no paragraph mark in VectorCraft.
+                if let Some(last) = obj.runs.last_mut()
+                    && last.text.ends_with('\n')
+                {
+                    last.text.pop();
+                }
+                obj.runs.retain(|r| !r.text.is_empty());
+                let mut para = ParaStyle::default();
+                // CorelDRAW's 100 % line spacing is the first font's Windows line height (OS/2
+                // usWinAscent + usWinDescent: 1.361 em for Barlow, and lines 0.56 × 1.36 em apart in
+                // the samples); 1.2 em when the font can't be read.
+                let height = obj.runs.first().map_or(1.2, |r| win_line_height(&r.style.font_family, &r.style.font_style));
+                let leading = text.line_spacing * height * 100.0;
+                if leading.is_finite() && (1.0..=500.0).contains(&leading) {
+                    para.justification.auto_leading = leading;
+                }
+                obj.para = para;
+                obj.paras = Vec::new();
+                obj.xf = xf;
+                Node::new(self.doc.alloc_id(), NodeKind::Text(Box::new(obj)))
+            }
         };
         n.opacity = if o.opacity.is_finite() { o.opacity.clamp(0.0, 1.0) as f32 } else { 1.0 };
         Some(n)
+    }
+
+    /// A run's character style; `tracking` in thousandths of an em.
+    fn char_style(&mut self, r: &vectorcraft_cdr::text::TextRun, tracking: f64) -> CharStyle {
+        let mut st = CharStyle { font_style: font_style(r.weight, r.italic), ..CharStyle::default() };
+        if !r.font.is_empty() {
+            st.font_family = r.font.clone();
+            // CorelDRAW names some faces as families ("Barlow Medium"); where only the shorter
+            // family is installed, its last word is the style.
+            let db = vectorcraft_text::FontDb::global();
+            if db.styles(&r.font).is_empty()
+                && let Some((family, word)) = r.font.rsplit_once(' ')
+                && STYLE_WORDS.iter().any(|w| w.eq_ignore_ascii_case(word))
+                && !db.styles(family).is_empty()
+            {
+                st.font_family = family.to_string();
+                st.font_style = if r.italic { format!("{word} Italic") } else { word.to_string() };
+            }
+        }
+        st.size = if r.size.is_finite() { r.size.clamp(0.1, 1296.0) } else { 12.0 };
+        st.tracking = if tracking.is_finite() { tracking.clamp(-1000.0, 10000.0) } else { 0.0 };
+        st.fill = match &r.fill {
+            Some(Fill::Solid(c)) => Paint::solid(color(*c)),
+            Some(Fill::Fountain(g)) => {
+                self.warn("fountain fills on text import as their first colour");
+                Paint::solid(color(g.from))
+            }
+            None => Paint::None,
+        };
+        if let Some(o) = &r.outline
+            && o.width.is_finite()
+            && o.width > 0.0
+        {
+            st.stroke = Paint::solid(color(o.color));
+            st.stroke_width = o.width.min(MAX_OUTLINE);
+        }
+        st
     }
 
     fn appearance(&mut self, o: &cd::Object, bounds: Rect) -> Appearance {
@@ -237,4 +304,34 @@ fn png(b: &vectorcraft_cdr::bitmap::Bitmap) -> Option<Vec<u8>> {
     let mut out = Vec::new();
     buf.write_to(&mut Cursor::new(&mut out), image::ImageFormat::Png).ok()?;
     Some(out)
+}
+
+/// Style names a CorelDRAW family name may end with.
+const STYLE_WORDS: &[&str] = &["Thin", "ExtraLight", "Light", "Book", "Regular", "Medium", "SemiBold", "Bold", "ExtraBold", "Black", "Heavy"];
+
+/// The face name of a CSS weight.
+fn font_style(weight: u16, italic: bool) -> String {
+    let w = match weight {
+        ..=150 => "Thin",
+        151..=250 => "ExtraLight",
+        251..=350 => "Light",
+        351..=450 => "Regular",
+        451..=550 => "Medium",
+        551..=650 => "SemiBold",
+        651..=750 => "Bold",
+        751..=850 => "ExtraBold",
+        _ => "Black",
+    };
+    match (w, italic) {
+        ("Regular", true) => "Italic".into(),
+        (w, true) => format!("{w} Italic"),
+        (w, false) => w.into(),
+    }
+}
+
+/// A face's Windows line height in ems, 1.2 when it can't be found.
+fn win_line_height(family: &str, style: &str) -> f64 {
+    let Some(face) = vectorcraft_text::FontDb::global().face(family, style) else { return 1.2 };
+    let upem = face.units_per_em();
+    face.win_line_height().map(|h| h / upem).filter(|h| h.is_finite() && (0.5..=3.0).contains(h)).unwrap_or(1.2)
 }

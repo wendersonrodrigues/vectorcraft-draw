@@ -30,6 +30,7 @@ see "Not read yet".
 | Curves (object type 3): nodes with move, line, cubic and close flags | paths |
 | Rectangles (object type 1): width and height through the object's transform | paths (corner rounding not read yet) |
 | Bitmaps (object type 5): a box in object space and the id of a `bmp ` record (`LIST bmpt`, data in `Bitmaps.dat`): 24-bit BGR rows bottom first, optional 8-bit mask | embedded PNG images with transparency, placed through the object's transform |
+| Text (object type 4, `txsm`): base and character styles as JSON (font, weight, italic, size, fill, outline), per-character style indices, Windows-1252 characters, `\r` between paragraphs, line and character spacing | point type with styled runs, the first baseline at the object's origin |
 | Transforms (`trfd`: a, b, tx, c, d, ty) | applied to the geometry |
 | PowerClip: a container's argument `0x1F45` names (first u32) the `spnd` of a group in the document's `LIST clpt`, whose objects it clips | clip group; the container's fill behind the contents, its outline over them |
 | Style JSON: uniform fills, fountain fills (two colours, type 1 linear, type 2 radial), outline width and colour, uniform transparency; RGB255, CMYK and CMYK255 colours | fill and stroke appearance, opacity |
@@ -38,6 +39,16 @@ Bitmap records were checked the same way: the decoded image shows the expected p
 only when rows are read bottom first, its colours are right only as blue-green-red, its mask
 cuts out the background, and the box through the object's transform lands on the object's
 recorded bounding box to within one unit.
+
+Text was checked against the same page: every text object's recorded bounding box starts at its
+origin and rises 0.73 em above it (the capitals of the fonts used), its characters spell what
+the package's `META-INF/textinfo.xml` lists, and the rendered page puts each line where the
+preview does. Weights are powers of four (64 regular; 256 in a family named Medium, 1024 in one
+named SemiBold, 4096 for bold faces) and read as CSS weights. Line spacing is a percentage of
+the font's Windows line height (OS/2 usWinAscent + usWinDescent): Barlow's is 1.361 em, and the
+sample's two-line text at 56 % ends its second line 0.948 em below the first baseline, as the
+import draws it to within 0.005 em. Character spacing is an approximation, CorelDRAW's
+percentage of a quarter em.
 
 Radial fountain fills (type 2) put the second colour at the centre and the first at the edge, the
 centre moved by `xCenterOffset`/`yCenterOffset` (percent of the object's size, y up), with a radius
@@ -51,7 +62,8 @@ tall); no file seen states it.
 
 ## Not read yet
 
-Text (object type 4), bitmaps of other colour depths (only 24-bit colour with an 8-bit mask has
+Paragraph alignment, indents and frame (paragraph) text (none in the sample), text on a path,
+fountain fills on text (their first colour), bitmaps of other colour depths (only 24-bit colour with an 8-bit mask has
 been seen), other object types (22, 31…),
 rounded rectangle corners, ellipses and polygons as their own types, fountain fill intermediate
 colours, steps, `xScale`/`yScale` and the linear fill's colour order (inferred: first colour at the
