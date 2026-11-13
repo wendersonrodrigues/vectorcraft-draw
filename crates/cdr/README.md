@@ -28,7 +28,7 @@ see "Not read yet".
 | Layers (`LIST layr`, name in UTF-16); guide, desktop and grid layers are left out | layers (same name on several pages: one layer) |
 | Groups (`LIST grp `) | groups |
 | Curves (object type 3): nodes with move, line, cubic and close flags | paths |
-| Rectangles (object type 1): width and height through the object's transform | paths (corner rounding not read yet) |
+| Rectangles (object type 1): width and height through the object's transform; per-corner radii as a share of half the shorter side | paths with round corners (scalloped and chamfered corners drawn round) |
 | Bitmaps (object type 5): a box in object space and the id of a `bmp ` record (`LIST bmpt`, data in `Bitmaps.dat`): 24-bit BGR rows bottom first, optional 8-bit mask | embedded PNG images with transparency, placed through the object's transform |
 | Text (object type 4, `txsm`): base and character styles as JSON (font, weight, italic, size, fill, outline), per-character style indices, Windows-1252 characters, `\r` between paragraphs, line and character spacing | point type with styled runs, the first baseline at the object's origin |
 | Transforms (`trfd`: a, b, tx, c, d, ty) | applied to the geometry |
@@ -39,6 +39,12 @@ Bitmap records were checked the same way: the decoded image shows the expected p
 only when rows are read bottom first, its colours are right only as blue-green-red, its mask
 cuts out the background, and the box through the object's transform lands on the object's
 recorded bounding box to within one unit.
+
+A rectangle's geometry is 16 f64: width, height, the transform's scale twice, then three per
+corner (style, radius, one more), the corners listed from `(w, 0)`. The sample's price box has
+three corners at 0.72066 and one at 0; the preview shows it square at `(w, h)`, and its round
+corners' radius, fitted to the preview's pixels, is 19.2 pixels against the 19.06 that 0.72066
+of half the shorter side gives.
 
 Text was checked against the same page: every text object's recorded bounding box starts at its
 origin and rises 0.73 em above it (the capitals of the fonts used), its characters spell what
@@ -65,7 +71,7 @@ tall); no file seen states it.
 Paragraph alignment, indents and frame (paragraph) text (none in the sample), text on a path,
 fountain fills on text (their first colour), bitmaps of other colour depths (only 24-bit colour with an 8-bit mask has
 been seen), other object types (22, 31…),
-rounded rectangle corners, ellipses and polygons as their own types, fountain fill intermediate
+which of a rectangle's first and third corners is which (they shared a radius in the sample), corner styles other than round, ellipses and polygons as their own types, fountain fill intermediate
 colours, steps, `xScale`/`yScale` and the linear fill's colour order (inferred: first colour at the
 start), pattern and texture
 fills, dashes, arrows, effects, and older files that are one RIFF file instead of a

@@ -1,4 +1,4 @@
-use crate::model::{Color, Fill, Kind, Segment};
+use crate::model::{Color, Fill, Kind, Point, Segment};
 use crate::synth::{self, curve, loda, object, rectangle, style};
 use crate::{Error, Limits, is_cdr, read};
 
@@ -291,4 +291,37 @@ fn hostile_text_never_panics() {
         t.push(b'{');
     }
     let _ = read(&synth::simple(vec![text_object(t, ID)]), Limits::default());
+}
+
+#[test]
+fn rectangle_corners_round_by_a_share_of_half_the_shorter_side() {
+    // 4000 × 2000 units (y up, so h is negative going down), every corner but (w, h) rounded by
+    // half of half the shorter side: 500 units.
+    let f = synth::simple(vec![object(
+        loda(1, &[(0x1e, synth::rounded_rectangle(4000.0, -2000.0, [0.5, 0.0, 0.5, 0.5])), (0xc9, solid(255, 255, 255))]),
+        ID,
+    )]);
+    let d = read(&f, Limits::default()).unwrap();
+    let p = &d.pages[0];
+    let Kind::Path { subpaths, .. } = &p.layers[0].objects[0].kind else { panic!() };
+    let s = &subpaths[0];
+    assert!(s.closed);
+    let cubics = s.segments.iter().filter(|g| matches!(g, Segment::Cubic(..))).count();
+    assert_eq!(cubics, 3, "three round corners: {:?}", s.segments);
+    let at = |x: f64, y: f64| Point { x: p.width / 2.0 + x / PT, y: p.height / 2.0 - y / PT };
+    let near = |a: Point, b: Point| (a.x - b.x).abs() < 1e-9 && (a.y - b.y).abs() < 1e-9;
+    // It starts 500 units right of the origin corner, and the far corner (w, h) is a sharp
+    // point the outline passes through.
+    assert!(near(s.start, at(500.0, 0.0)), "{:?}", s.start);
+    assert!(s.segments.iter().any(|g| matches!(g, Segment::Line(q) if near(*q, at(4000.0, -2000.0)))));
+    // The corner at (w, 0) is rounded: the outline turns from (3500, 0) to (4000, -500).
+    assert!(s.segments.iter().any(|g| matches!(g, Segment::Cubic(_, _, q) if near(*q, at(4000.0, -500.0)))));
+}
+
+#[test]
+fn square_rectangles_have_four_sides_and_no_empty_one() {
+    let f = synth::simple(vec![object(loda(1, &[(0x1e, rectangle(10.0, 10.0))]), ID)]);
+    let d = read(&f, Limits::default()).unwrap();
+    let Kind::Path { subpaths, .. } = &d.pages[0].layers[0].objects[0].kind else { panic!() };
+    assert_eq!(subpaths[0].segments.len(), 3, "the fourth side is the close");
 }

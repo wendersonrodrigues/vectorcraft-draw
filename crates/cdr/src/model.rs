@@ -342,7 +342,12 @@ impl<'t, 'a> Builder<'t, 'a> {
                     self.warnings.add("a rectangle without a size");
                     return Ok(None);
                 };
-                vec![(0.0, 0.0, 0x0c), (w, 0.0, 0x40), (w, h, 0x40), (0.0, h, 0x48)]
+                let corners: [(f64, f64); 4] =
+                    std::array::from_fn(|i| (f64_at(g, 32 + 24 * i).unwrap_or(0.0), f64_at(g, 40 + 24 * i).unwrap_or(0.0)));
+                if corners.iter().any(|&(style, r)| style != 0.0 && r != 0.0) {
+                    self.warnings.add("scalloped and chamfered rectangle corners, drawn round");
+                }
+                rectangle(w, h, corners.map(|c| c.1))
             }
             (object::TEXT, _) => {
                 let Some(t) = obj.leaf(b"txsm") else {
@@ -506,6 +511,57 @@ impl<'t, 'a> Builder<'t, 'a> {
         out.retain(|s| !s.segments.is_empty());
         out
     }
+}
+
+/// A rectangle's outline as nodes (see [`Builder::subpaths`]): from `(0, 0)` to `(w, h)`, its
+/// corners rounded by `radii`.
+///
+/// A rectangle's geometry is 16 f64: width, height, the scale of its transform (twice), then
+/// three per corner (a style, 0 for round; the radius as a share of half the shorter side; one
+/// more, 0 so far). The corners are listed from `(w, 0)` on: `(w, 0)`, `(w, h)`, `(0, h)`,
+/// `(0, 0)`. In the one rounded rectangle seen, the second corner is the only square one, and
+/// the preview shows `(w, h)` square; the first and third weren't told apart (they share a
+/// radius). The radius was measured on the same preview: 19.2 pixels against the 19.06 this
+/// reading gives.
+fn rectangle(w: f64, h: f64, radii: [f64; 4]) -> Vec<(f64, f64, u8)> {
+    const KAPPA: f64 = 0.552_284_749_830_793_4;
+    let p = [(0.0, 0.0), (w, 0.0), (w, h), (0.0, h)];
+    let half = w.abs().min(h.abs()) / 2.0;
+    // `radii` start at (w, 0), which is `p[1]`.
+    let r = |k: usize| {
+        let share = radii.get((k + 3) % 4).copied().unwrap_or(0.0);
+        if share.is_finite() { (share.clamp(0.0, 1.0) * half).max(0.0) } else { 0.0 }
+    };
+    let toward = |from: (f64, f64), to: (f64, f64), d: f64| {
+        let (dx, dy) = (to.0 - from.0, to.1 - from.1);
+        let len = dx.hypot(dy);
+        if len > 0.0 { (from.0 + dx / len * d, from.1 + dy / len * d) } else { from }
+    };
+    // Where the outline leaves corner k toward k + 1, and where it reaches it from k - 1.
+    let leave = |k: usize| toward(p[k], p[(k + 1) % 4], r(k));
+    let reach = |k: usize| toward(p[k], p[(k + 3) % 4], r(k));
+    let mut out = Vec::with_capacity(16);
+    let start = leave(0);
+    out.push((start.0, start.1, 0x0c));
+    for i in 1..=4 {
+        let k = i % 4;
+        let (a, b) = (reach(k), leave(k));
+        // Back at a square starting corner, closing the outline draws the last side.
+        if !(k == 0 && r(0) == 0.0) {
+            out.push((a.0, a.1, 0x40));
+        }
+        if r(k) > 0.0 {
+            let c1 = (a.0 + (p[k].0 - a.0) * KAPPA, a.1 + (p[k].1 - a.1) * KAPPA);
+            let c2 = (b.0 + (p[k].0 - b.0) * KAPPA, b.1 + (p[k].1 - b.1) * KAPPA);
+            out.push((c1.0, c1.1, 0xc0));
+            out.push((c2.0, c2.1, 0xc0));
+            out.push((b.0, b.1, 0x80));
+        }
+    }
+    if let Some(last) = out.last_mut() {
+        last.2 |= 0x08;
+    }
+    out
 }
 
 /// A `trfd`: 40 header bytes, then six f64 `(a, b, tx, c, d, ty)`.

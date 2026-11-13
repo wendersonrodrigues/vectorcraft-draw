@@ -65,6 +65,16 @@ pub fn rectangle(w: f64, h: f64) -> Vec<u8> {
     out
 }
 
+/// A rectangle's geometry argument with corner radii (shares of half the shorter side), listed
+/// from the corner at `(w, 0)` as CorelDRAW lists them.
+pub fn rounded_rectangle(w: f64, h: f64, radii: [f64; 4]) -> Vec<u8> {
+    let mut out = rectangle(w, h);
+    for (i, r) in radii.iter().enumerate() {
+        out[40 + 24 * i..48 + 24 * i].copy_from_slice(&r.to_le_bytes());
+    }
+    out
+}
+
 /// A style argument holding `json`.
 pub fn style(json: &str) -> Vec<u8> {
     let mut out = 1u32.to_le_bytes().to_vec();
