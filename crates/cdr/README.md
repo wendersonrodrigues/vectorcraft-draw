@@ -29,9 +29,15 @@ see "Not read yet".
 | Groups (`LIST grp `) | groups |
 | Curves (object type 3): nodes with move, line, cubic and close flags | paths |
 | Rectangles (object type 1): width and height through the object's transform | paths (corner rounding not read yet) |
+| Bitmaps (object type 5): a box in object space and the id of a `bmp ` record (`LIST bmpt`, data in `Bitmaps.dat`): 24-bit BGR rows bottom first, optional 8-bit mask | embedded PNG images with transparency, placed through the object's transform |
 | Transforms (`trfd`: a, b, tx, c, d, ty) | applied to the geometry |
 | PowerClip: a container's argument `0x1F45` names (first u32) the `spnd` of a group in the document's `LIST clpt`, whose objects it clips | clip group; the container's fill behind the contents, its outline over them |
 | Style JSON: uniform fills, fountain fills (two colours, type 1 linear, type 2 radial), outline width and colour, uniform transparency; RGB255, CMYK and CMYK255 colours | fill and stroke appearance, opacity |
+
+Bitmap records were checked the same way: the decoded image shows the expected picture upright
+only when rows are read bottom first, its colours are right only as blue-green-red, its mask
+cuts out the background, and the box through the object's transform lands on the object's
+recorded bounding box to within one unit.
 
 Radial fountain fills (type 2) put the second colour at the centre and the first at the edge, the
 centre moved by `xCenterOffset`/`yCenterOffset` (percent of the object's size, y up), with a radius
@@ -45,11 +51,12 @@ tall); no file seen states it.
 
 ## Not read yet
 
-Text (object type 4), bitmaps (type 5, `content/data/Bitmaps.dat`), other object types (22, 31…),
+Text (object type 4), bitmaps of other colour depths (only 24-bit colour with an 8-bit mask has
+been seen), other object types (22, 31…),
 rounded rectangle corners, ellipses and polygons as their own types, fountain fill intermediate
 colours, steps, `xScale`/`yScale` and the linear fill's colour order (inferred: first colour at the
 start), pattern and texture
-fills, dashes, arrows, PowerClip, effects, and older files that are one RIFF file instead of a
+fills, dashes, arrows, effects, and older files that are one RIFF file instead of a
 package (refused with a message).
 
 ## Testing

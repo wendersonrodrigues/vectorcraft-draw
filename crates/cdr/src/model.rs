@@ -17,6 +17,7 @@
 //! tall and the sample page 98 × 100 cm, both plausible, but no file seen so far states it.
 
 use crate::args::{Args, kind, object};
+use crate::bitmap::{self, Bitmap};
 use crate::package::{Package, is_legacy_riff};
 use crate::riff::{self, Node};
 use crate::{Error, Limits, style};
@@ -80,7 +81,18 @@ pub struct Subpath {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Kind {
     Group(Vec<Object>),
-    Path { subpaths: Vec<Subpath>, even_odd: bool },
+    Path {
+        subpaths: Vec<Subpath>,
+        even_odd: bool,
+    },
+    /// A bitmap: `Document::bitmaps[bitmap]`, its pixel (0, 0) corner at `origin` and each
+    /// pixel step right and down moving by `x` and `y` (all in page points).
+    Image {
+        bitmap: usize,
+        origin: Point,
+        x: Point,
+        y: Point,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -114,6 +126,8 @@ pub struct Page {
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Document {
     pub pages: Vec<Page>,
+    /// The bitmaps image objects show, each decoded once.
+    pub bitmaps: Vec<Bitmap>,
     /// What was left out or approximated, one short phrase each.
     pub warnings: Vec<String>,
 }
@@ -145,7 +159,17 @@ pub fn read(bytes: &[u8], limits: Limits) -> Result<Document, Error> {
     }
     let streams: Vec<&[u8]> = owned.iter().map(Vec::as_slice).collect();
     let tree = riff::parse(&root, &streams, limits)?;
-    Builder { limits, nodes: 0, warnings: Warnings::default(), page: (0.0, 0.0), clips: Vec::new() }.document(&tree)
+    Builder {
+        limits,
+        nodes: 0,
+        warnings: Warnings::default(),
+        page: (0.0, 0.0),
+        clips: Vec::new(),
+        records: Vec::new(),
+        seen: Vec::new(),
+        decoded: Vec::new(),
+    }
+    .document(&tree)
 }
 
 #[derive(Default)]
@@ -177,6 +201,11 @@ struct Builder<'t, 'a> {
     page: (f64, f64),
     /// PowerClip contents: each `LIST clpt` group by its `spnd`.
     clips: Vec<(u32, &'t Node<'a>)>,
+    /// Bitmap records (`LIST bmpt`) by id.
+    records: Vec<(u32, &'a [u8])>,
+    /// Bitmap ids looked up so far, with their index in `decoded` (`None`: unreadable).
+    seen: Vec<(u32, Option<usize>)>,
+    decoded: Vec<Bitmap>,
 }
 
 /// A PowerClip container's argument naming its contents.
@@ -196,6 +225,16 @@ impl<'t, 'a> Builder<'t, 'a> {
             for g in clpt.children().iter().filter(|c| c.is_list(b"grp ")) {
                 if let Some(id) = g.leaf(b"spnd").and_then(|s| s.get(..4)).and_then(|s| s.try_into().ok()).map(u32::from_le_bytes) {
                     self.clips.push((id, g));
+                }
+            }
+        }
+        if let Some(bmpt) = tree.list(b"bmpt") {
+            for c in bmpt.children() {
+                if let Node::Leaf { id: tag, data } = c
+                    && tag == b"bmp "
+                    && let Some(id) = bitmap::id(data)
+                {
+                    self.records.push((id, data));
                 }
             }
         }
@@ -221,7 +260,7 @@ impl<'t, 'a> Builder<'t, 'a> {
         if out.is_empty() {
             return Err(Error::Malformed("the document has no pages"));
         }
-        Ok(Document { pages: out, warnings: self.warnings.into_vec() })
+        Ok(Document { pages: out, bitmaps: self.decoded, warnings: self.warnings.into_vec() })
     }
 
     /// A page's drawing layers, bottom first.
@@ -279,6 +318,14 @@ impl<'t, 'a> Builder<'t, 'a> {
         let Some(loda) = lgob.leaf(b"loda") else { return Ok(None) };
         let a = Args::parse(loda)?;
         let geometry = a.get(kind::GEOMETRY);
+        let m = lgob.list(b"trfl").and_then(|t| t.leaf(b"trfd")).map(transform).unwrap_or(Some(IDENTITY));
+        let Some(m) = m else {
+            self.warnings.add("an object whose transform couldn't be read");
+            return Ok(None);
+        };
+        let json = a.get(kind::STYLE).and_then(style::parse);
+        let st = json.as_ref().map(|j| style::style(j, UNITS_PER_POINT));
+        let opacity = st.as_ref().map(|s| 1.0 - s.transparency).unwrap_or(1.0);
         let points: Vec<(f64, f64, u8)> = match (a.object, geometry) {
             (object::CURVE, Some(g)) => self.curve(g)?,
             (object::RECTANGLE, Some(g)) => {
@@ -292,8 +339,11 @@ impl<'t, 'a> Builder<'t, 'a> {
                 self.warnings.add("text");
                 return Ok(None);
             }
-            (object::BITMAP, _) => {
-                self.warnings.add("bitmaps");
+            (object::BITMAP, Some(g)) => {
+                return Ok(self.image(g, m).map(|kind| Object { kind, fill: None, outline: None, opacity, clipped: Vec::new() }));
+            }
+            (object::BITMAP, None) => {
+                self.warnings.add("bitmaps whose placement couldn't be read");
                 return Ok(None);
             }
             (t, _) => {
@@ -301,26 +351,19 @@ impl<'t, 'a> Builder<'t, 'a> {
                 return Ok(None);
             }
         };
-        let m = lgob.list(b"trfl").and_then(|t| t.leaf(b"trfd")).map(transform).unwrap_or(Some(IDENTITY));
-        let Some(m) = m else {
-            self.warnings.add("an object whose transform couldn't be read");
-            return Ok(None);
-        };
         let subpaths = self.subpaths(&points, m);
         if subpaths.is_empty() {
             return Ok(None);
         }
-        let json = a.get(kind::STYLE).and_then(style::parse);
-        let st = json.as_ref().map(|j| style::style(j, UNITS_PER_POINT));
         let even_odd = json.as_ref().and_then(|j| j.get("fill")).and_then(|f| f.get("winding")).and_then(|w| w.as_str()) != Some("1");
-        let (fill, outline, opacity) = match st {
+        let (fill, outline) = match st {
             Some(s) => {
                 for w in &s.skipped {
                     self.warnings.add(w);
                 }
-                (s.fill, s.outline, 1.0 - s.transparency)
+                (s.fill, s.outline)
             }
-            None => (None, None, 1.0),
+            None => (None, None),
         };
         let clipped = match a.get(POWERCLIP).and_then(|p| p.get(..4)).and_then(|p| p.try_into().ok()).map(u32::from_le_bytes) {
             Some(id) => match self.clips.iter().find(|(i, _)| *i == id).map(|(_, g)| *g) {
@@ -333,6 +376,52 @@ impl<'t, 'a> Builder<'t, 'a> {
             None => Vec::new(),
         };
         Ok(Some(Object { kind: Kind::Path { subpaths, even_odd }, fill, outline, opacity, clipped }))
+    }
+
+    /// A bitmap object's geometry: its box in object space (left, top, right, bottom as i32;
+    /// written twice), then u16 2 and the bits per pixel, the width and height in pixels, a u32,
+    /// and the id of its record in `LIST bmpt`.
+    fn image(&mut self, g: &[u8], m: Affine) -> Option<Kind> {
+        let (Some(l), Some(t), Some(r), Some(b), Some(id)) = (i32_at(g, 0), i32_at(g, 4), i32_at(g, 8), i32_at(g, 12), i32_at(g, 48)) else {
+            self.warnings.add("bitmaps whose placement couldn't be read");
+            return None;
+        };
+        let id = id as u32;
+        let index = match self.seen.iter().find(|(i, _)| *i == id) {
+            Some((_, index)) => *index,
+            None => {
+                let decoded = match self.records.iter().find(|(i, _)| *i == id) {
+                    Some((_, rec)) => bitmap::decode(rec).map_err(|e| e.to_string()),
+                    None => Err("its pixels are missing".to_string()),
+                };
+                let index = match decoded {
+                    Ok(bm) => {
+                        self.decoded.push(bm);
+                        Some(self.decoded.len() - 1)
+                    }
+                    Err(e) => {
+                        self.warnings.add(&format!("bitmaps that couldn't be read ({e})"));
+                        None
+                    }
+                };
+                self.seen.push((id, index));
+                index
+            }
+        }?;
+        let (w, h) = self.decoded.get(index).map(|b| (b.width, b.height))?;
+        let (l, t, r, b) = (f64::from(l), f64::from(t), f64::from(r), f64::from(b));
+        let origin = self.to_page(m, l, t);
+        let right = self.to_page(m, l + (r - l) / f64::from(w), t);
+        let down = self.to_page(m, l, t + (b - t) / f64::from(h));
+        let step = |p: Point| Point { x: p.x - origin.x, y: p.y - origin.y };
+        Some(Kind::Image { bitmap: index, origin, x: step(right), y: step(down) })
+    }
+
+    /// Object-space `(x, y)` through `m` to page points.
+    fn to_page(&self, m: Affine, x: f64, y: f64) -> Point {
+        let (w, h) = self.page;
+        let (px, py) = (m[0] * x + m[1] * y + m[2], m[3] * x + m[4] * y + m[5]);
+        Point { x: (px + w / 2.0) / UNITS_PER_POINT, y: (h / 2.0 - py) / UNITS_PER_POINT }
     }
 
     /// A curve's nodes: a count, that many (x, y) i32 pairs, then that many type bytes.
@@ -353,16 +442,11 @@ impl<'t, 'a> Builder<'t, 'a> {
     /// subpath, 01 is a line to it, 10 a cubic to it whose two control points are the 11 nodes
     /// just before; bit 3 on a line or cubic closes the subpath.
     fn subpaths(&mut self, nodes: &[(f64, f64, u8)], m: Affine) -> Vec<Subpath> {
-        let (w, h) = self.page;
-        let to_page = |x: f64, y: f64| {
-            let (px, py) = (m[0] * x + m[1] * y + m[2], m[3] * x + m[4] * y + m[5]);
-            Point { x: (px + w / 2.0) / UNITS_PER_POINT, y: (h / 2.0 - py) / UNITS_PER_POINT }
-        };
         let mut out: Vec<Subpath> = Vec::new();
         let mut controls: Vec<Point> = Vec::new();
         let mut broken = false;
         for &(x, y, t) in nodes {
-            let p = to_page(x, y);
+            let p = self.to_page(m, x, y);
             match t & 0xc0 {
                 0x00 => {
                     controls.clear();

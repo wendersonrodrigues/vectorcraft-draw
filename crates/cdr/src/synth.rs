@@ -219,3 +219,64 @@ pub fn simple(objects: Vec<Chunk>) -> Vec<u8> {
         page(vec![layer(0x00, "Layer 1", objects)]),
     ])
 }
+
+/// One `RI` image block: `pixels` rows bottom first, each `width * bpp / 8` bytes (padded here).
+fn ri(kind: u32, width: u32, height: u32, bpp: u32, rows_bottom_first: &[Vec<u8>]) -> Vec<u8> {
+    let stride = (width * bpp / 8).div_ceil(4) * 4;
+    let mut data = Vec::new();
+    for r in rows_bottom_first {
+        let mut r = r.clone();
+        r.resize(stride as usize, 0);
+        data.extend(r);
+    }
+    let mut out = b"RI".to_vec();
+    out.extend_from_slice(&(78 + data.len() as u32).to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes());
+    out.extend_from_slice(&78u32.to_le_bytes());
+    for v in [kind, 1, width, height, 1, bpp, stride, data.len() as u32, 0, 2_834_645, 2_834_645, 0, 0x40, 0, 0, 0] {
+        out.extend_from_slice(&v.to_le_bytes());
+    }
+    out.truncate(78);
+    out.extend(data);
+    out
+}
+
+/// A `bmp ` record: bitmap `id`, 24-bit `bgr` rows and optional 8-bit `alpha` rows, both
+/// bottom row first.
+pub fn bitmap_record(id: u32, width: u32, height: u32, bgr: &[Vec<u8>], alpha: Option<&[Vec<u8>]>) -> Vec<u8> {
+    let color = ri(1, width, height, 24, bgr);
+    let mask = alpha.map(|a| ri(99, width, height, 8, a));
+    let mut ui = b"UI\0\0".to_vec();
+    let total = 32 + color.len() + mask.as_ref().map_or(0, Vec::len);
+    ui.extend_from_slice(&(total as u32).to_le_bytes());
+    ui.extend_from_slice(&0u32.to_le_bytes());
+    ui.extend_from_slice(&32u32.to_le_bytes());
+    ui.extend_from_slice(&(if mask.is_some() { 32 + color.len() as u32 } else { 0 }).to_le_bytes());
+    ui.extend_from_slice(&0u32.to_le_bytes());
+    ui.extend_from_slice(&2u32.to_le_bytes());
+    ui.extend_from_slice(&255u32.to_le_bytes());
+    ui.extend(color);
+    ui.extend(mask.unwrap_or_default());
+    let mut out = id.to_le_bytes().to_vec();
+    out.extend_from_slice(&1u32.to_le_bytes());
+    out.extend(ui);
+    out
+}
+
+/// A bitmap object's geometry argument: its box (left, top, right, bottom) showing bitmap `id`
+/// of `width` × `height` pixels.
+pub fn image(ltrb: [i32; 4], width: i32, height: i32, id: i32) -> Vec<u8> {
+    let mut out = Vec::new();
+    for _ in 0..2 {
+        for v in ltrb {
+            out.extend_from_slice(&v.to_le_bytes());
+        }
+    }
+    out.extend_from_slice(&2u16.to_le_bytes());
+    out.extend_from_slice(&24u16.to_le_bytes());
+    for v in [width, height, 7, id, 0, 0] {
+        out.extend_from_slice(&v.to_le_bytes());
+    }
+    out.resize(125, 0);
+    out
+}

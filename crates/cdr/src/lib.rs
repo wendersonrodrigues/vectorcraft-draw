@@ -14,6 +14,7 @@
 use std::fmt;
 
 mod args;
+pub mod bitmap;
 pub mod model;
 mod package;
 mod riff;

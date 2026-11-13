@@ -1,17 +1,19 @@
-//! CorelDRAW documents (`.cdr`): the pages, layers, groups, curves and rectangles that
-//! `vectorcraft-cdr` reads, with their solid and fountain fills, outlines and transparency, as
-//! editable VectorCraft art. Each page becomes an artboard, side by side 36 pt apart; layers of
-//! the same name on different pages become one layer. Whatever the reader leaves out (text,
-//! bitmaps, other objects) is listed in the warnings.
+//! CorelDRAW documents (`.cdr`): the pages, layers, groups, PowerClips, curves, rectangles and
+//! bitmaps that `vectorcraft-cdr` reads, with their solid and fountain fills, outlines and
+//! transparency, as editable VectorCraft art; bitmaps are embedded as PNG. Each page becomes an
+//! artboard, side by side 36 pt apart; layers of the same name on different pages become one
+//! layer. Whatever the reader leaves out (text, other objects) is listed in the warnings.
+
+use std::io::Cursor;
 
 use std::sync::Arc;
 
-use kurbo::{BezPath, Point, Rect, Shape};
+use kurbo::{Affine, BezPath, Point, Rect, Shape};
 use vectorcraft_cdr::model::{self as cd, Fill, Kind, Segment};
 use vectorcraft_color::{Color, Gradient, GradientGeom, GradientKind, GradientPaint, GradientStop, Paint};
 use vectorcraft_doc::appearance::{Appearance, AppearanceItem, FillLayer, StrokeLayer};
 use vectorcraft_doc::geom::{FillRule, PathData};
-use vectorcraft_doc::{Artboard, Document, LayerColor, Node, NodeKind};
+use vectorcraft_doc::{Artboard, Document, ImageObject, LayerColor, Node, NodeKind};
 
 use super::load::err;
 use crate::Result;
@@ -24,7 +26,7 @@ const MAX_OUTLINE: f64 = 1000.0;
 pub(super) fn import(bytes: &[u8]) -> Result<(Document, Vec<String>)> {
     let d = vectorcraft_cdr::read(bytes, vectorcraft_cdr::Limits::default())
         .map_err(|e| err(format!("{e}; export SVG or PDF from CorelDRAW to open it")))?;
-    let mut b = Builder { doc: Document::new(0.0, 0.0), warnings: Vec::new() };
+    let mut b = Builder { doc: Document::new(0.0, 0.0), warnings: Vec::new(), images: Vec::new() };
     b.document(&d)?;
     b.doc.limit_depth_noting(&mut b.warnings);
     let mut warnings: Vec<String> = d.warnings.iter().map(|w| format!("CorelDRAW: not imported: {w}.")).collect();
@@ -35,6 +37,9 @@ pub(super) fn import(bytes: &[u8]) -> Result<(Document, Vec<String>)> {
 struct Builder {
     doc: Document,
     warnings: Vec<String>,
+    /// Each of the reader's bitmaps as stored in `doc.images`: its key and pixel size (`None`:
+    /// it couldn't be encoded).
+    images: Vec<Option<(String, u32, u32)>>,
 }
 
 impl Builder {
@@ -45,6 +50,17 @@ impl Builder {
     }
 
     fn document(&mut self, d: &cd::Document) -> Result<()> {
+        for b in &d.bitmaps {
+            let stored = png(b).and_then(|bytes| super::load::raster_image(&bytes).ok());
+            let entry = stored.map(|r| {
+                self.doc.images.entry(r.key.clone()).or_insert(r.blob);
+                (r.key, r.width, r.height)
+            });
+            if entry.is_none() {
+                self.warn("a bitmap that couldn't be stored was left out");
+            }
+            self.images.push(entry);
+        }
         // (name, children bottom first), in the order the names first appear, bottom first.
         let mut layers: Vec<(String, Vec<Arc<Node>>)> = Vec::new();
         let mut artboards = Vec::new();
@@ -123,6 +139,15 @@ impl Builder {
                 } else {
                     p
                 }
+            }
+            Kind::Image { bitmap, origin, x, y } => {
+                let (key, width, height) = self.images.get(*bitmap).cloned().flatten()?;
+                let xf = Affine::new([x.x, x.y, y.x, y.y, origin.x + dx, origin.y]);
+                if !xf.as_coeffs().iter().all(|v| v.is_finite()) {
+                    return None;
+                }
+                let image = ImageObject { key, width, height, xf, link: None, placement: Default::default(), pixels: None };
+                Node::new(self.doc.alloc_id(), NodeKind::Image(Box::new(image)))
             }
         };
         n.opacity = if o.opacity.is_finite() { o.opacity.clamp(0.0, 1.0) as f32 } else { 1.0 };
@@ -204,4 +229,12 @@ fn path(subpaths: &[cd::Subpath], dx: f64) -> Option<BezPath> {
         }
     }
     Some(bp)
+}
+
+/// A bitmap as PNG bytes.
+fn png(b: &vectorcraft_cdr::bitmap::Bitmap) -> Option<Vec<u8>> {
+    let buf = image::RgbaImage::from_raw(b.width, b.height, b.rgba.clone())?;
+    let mut out = Vec::new();
+    buf.write_to(&mut Cursor::new(&mut out), image::ImageFormat::Png).ok()?;
+    Some(out)
 }

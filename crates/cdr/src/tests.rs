@@ -105,7 +105,7 @@ fn text_and_bitmaps_are_reported() {
     let f = synth::simple(vec![object(loda(4, &[]), ID), object(loda(5, &[]), ID), object(loda(5, &[]), ID)]);
     let d = read(&f, Limits::default()).unwrap();
     assert!(d.warnings.contains(&"text".to_string()), "{:?}", d.warnings);
-    assert!(d.warnings.contains(&"bitmaps (2)".to_string()), "{:?}", d.warnings);
+    assert!(d.warnings.contains(&"bitmaps whose placement couldn't be read (2)".to_string()), "{:?}", d.warnings);
 }
 
 #[test]
@@ -160,7 +160,13 @@ fn real_files() {
             let bytes = std::fs::read(&p).unwrap();
             let d = read(&bytes, Limits::default()).unwrap_or_else(|e| panic!("{}: {e}", p.display()));
             let objects: usize = d.pages.iter().flat_map(|p| &p.layers).map(|l| l.objects.len()).sum();
-            eprintln!("{}: {} pages, {objects} top-level objects, warnings {:?}", p.display(), d.pages.len(), d.warnings);
+            eprintln!(
+                "{}: {} pages, {objects} top-level objects, {} bitmaps, warnings {:?}",
+                p.display(),
+                d.pages.len(),
+                d.bitmaps.len(),
+                d.warnings
+            );
             assert!(objects > 0, "{}", p.display());
         }
     }
@@ -187,4 +193,58 @@ fn powerclip_containers_take_their_contents_from_clpt() {
     let o = &d.pages[0].layers[0].objects[0];
     assert_eq!(o.clipped.len(), 1);
     assert_eq!(o.clipped[0].fill, Some(Fill::Solid(Color::Rgb(1.0, 0.0, 0.0))));
+}
+
+fn bitmap_doc(alpha: bool, id_in_object: i32) -> Vec<u8> {
+    use synth::{bitmap_record, image, layer, leaf, list, mcfg, package, page};
+    // 2 × 2 pixels, stored bottom row first: bottom row red, green; top row blue, white.
+    let bgr = [vec![0, 0, 255, 0, 255, 0], vec![255, 0, 0, 255, 255, 255]];
+    let a = [vec![255, 128], vec![0, 255]];
+    let rec = bitmap_record(6, 2, 2, &bgr, alpha.then_some(&a[..]));
+    let obj = object(loda(5, &[(0x1e, image([0, 2_000, 4_000, 0], 2, 2, id_in_object))]), [1.0, 0.0, 1_000.0, 0.0, 1.0, 0.0]);
+    package(vec![
+        list(b"bmpt", vec![leaf(b"bmp ", rec)]),
+        list(b"doc ", vec![leaf(b"mcfg", mcfg(9_800_000, 10_000_000))]),
+        page(vec![]),
+        page(vec![layer(0, "Layer 1", vec![obj])]),
+    ])
+}
+
+#[test]
+fn bitmaps_are_read_top_row_first_with_their_mask() {
+    let d = read(&bitmap_doc(true, 6), Limits::default()).unwrap();
+    assert!(d.warnings.is_empty(), "{:?}", d.warnings);
+    let b = &d.bitmaps[0];
+    assert_eq!((b.width, b.height), (2, 2));
+    // Top row: blue (alpha 0), white; bottom row: red, green (alpha 128).
+    assert_eq!(b.rgba, vec![0, 0, 255, 0, 255, 255, 255, 255, 255, 0, 0, 255, 0, 255, 0, 128]);
+    let p = &d.pages[0];
+    let Kind::Image { bitmap, origin, x, y } = &p.layers[0].objects[0].kind else { panic!("not an image") };
+    assert_eq!(*bitmap, 0);
+    // The box's top-left corner (0, 2000) moved 1000 right, y up to y down from the page's top.
+    assert!((origin.x - (p.width / 2.0 + 1_000.0 / PT)).abs() < 1e-9);
+    assert!((origin.y - (p.height / 2.0 - 2_000.0 / PT)).abs() < 1e-9);
+    assert!((x.x - 2_000.0 / PT).abs() < 1e-9 && x.y.abs() < 1e-12, "one pixel right is half the box's width");
+    assert!(y.x.abs() < 1e-12 && (y.y - 1_000.0 / PT).abs() < 1e-9, "one pixel down is half its height, downwards");
+}
+
+#[test]
+fn bitmaps_without_a_mask_are_opaque_and_missing_ones_are_reported() {
+    let d = read(&bitmap_doc(false, 6), Limits::default()).unwrap();
+    assert!(d.bitmaps[0].rgba.chunks(4).all(|p| p[3] == 255));
+    let d = read(&bitmap_doc(false, 9), Limits::default()).unwrap();
+    assert!(d.bitmaps.is_empty() && d.pages[0].layers[0].objects.is_empty());
+    assert!(d.warnings.iter().any(|w| w.contains("pixels are missing")), "{:?}", d.warnings);
+}
+
+#[test]
+fn hostile_bitmaps_never_panic() {
+    let f = bitmap_doc(true, 6);
+    for i in 0..f.len() {
+        for v in [0x00, 0x7f, 0xff] {
+            let mut g = f.clone();
+            g[i] = v;
+            let _ = read(&g, Limits::default());
+        }
+    }
 }

@@ -6262,9 +6262,9 @@ proptest! {
 // ---------- CorelDRAW ----------
 
 /// A synthetic CorelDRAW package (`vectorcraft_cdr::synth`, a test builder, not an exporter)
-/// with a curve, a rectangle, a group, a fountain fill, an outline and text.
+/// with a curve, a rectangle, a group, a fountain fill, an outline, a bitmap with a mask and text.
 fn cdr_sample() -> Vec<u8> {
-    use vectorcraft_cdr::synth::{curve, list, loda, object, rectangle, simple, style};
+    use vectorcraft_cdr::synth::{bitmap_record, curve, image, layer, leaf, list, loda, mcfg, object, package, page, rectangle, style};
     let id = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0];
     let solid = style(
         r#"{"fill":{"type":"1","primaryColor":"RGB255,USER,255,180,0,100,0"},"outline":{"width":"25400","color":"CMYK,USER,0,0,0,100,100,0"}}"#,
@@ -6273,10 +6273,22 @@ fn cdr_sample() -> Vec<u8> {
         r#"{"transparency":{"uniformTransparency":"0.5"},"fill":{"type":"2","fountainType":"2","primaryColor":"RGB255,USER,0,6,114,100,0","secondaryColor":"RGB255,USER,0,117,255,100,0","xCenterOffset":"10"}}"#,
     );
     let nodes = [(0, 0, 0x0c), (100_000, 0, 0xc0), (200_000, 100_000, 0xc0), (200_000, 200_000, 0x84), (0, 200_000, 0x48)];
-    simple(vec![
-        object(loda(4, &[]), id),
-        list(b"grp ", vec![object(loda(3, &[(0x1e, curve(&nodes)), (0xc9, solid)]), id)]),
-        object(loda(1, &[(0x1e, rectangle(3_000_000.0, -2_000_000.0)), (0xc9, fountain)]), [0.5, 0.0, -1_000_000.0, 0.0, 0.5, 1_000_000.0]),
+    let bgr = [vec![0, 0, 255, 0, 255, 0], vec![255, 0, 0, 255, 255, 255]];
+    let alpha = [vec![255, 128], vec![0, 255]];
+    package(vec![
+        list(b"bmpt", vec![leaf(b"bmp ", bitmap_record(6, 2, 2, &bgr, Some(&alpha[..])))]),
+        list(b"doc ", vec![leaf(b"mcfg", mcfg(9_800_000, 10_000_000))]),
+        page(vec![]),
+        page(vec![layer(
+            0,
+            "Layer 1",
+            vec![
+                object(loda(4, &[]), id),
+                object(loda(5, &[(0x1e, image([0, 2_000_000, 1_000_000, 0], 2, 2, 6))]), id),
+                list(b"grp ", vec![object(loda(3, &[(0x1e, curve(&nodes)), (0xc9, solid)]), id)]),
+                object(loda(1, &[(0x1e, rectangle(3_000_000.0, -2_000_000.0)), (0xc9, fountain)]), [0.5, 0.0, -1_000_000.0, 0.0, 0.5, 1_000_000.0]),
+            ],
+        )]),
     ])
 }
 
@@ -6285,7 +6297,8 @@ fn the_cdr_sample_opens_as_editable_art() {
     let l = vectorcraft_engine::cmd::fileio::load("x.cdr", &cdr_sample()).unwrap();
     assert_eq!(l.doc.artboards.len(), 1);
     let all = format!("{:?}", l.doc.layers);
-    for want in ["Path", "Group", "Gradient"] {
+    assert_eq!(l.doc.images.len(), 1, "the bitmap is embedded");
+    for want in ["Path", "Group", "Gradient", "Image"] {
         assert!(all.contains(want), "{want} missing");
     }
     assert!(l.warnings.iter().any(|w| w.contains("text")), "{:?}", l.warnings);
