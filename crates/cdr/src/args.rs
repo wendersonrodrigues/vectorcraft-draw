@@ -81,4 +81,6 @@ pub(crate) mod object {
     pub const GRID_LAYER: u32 = 0x0b;
     pub const GUIDE_LAYER: u32 = 0x0c;
     pub const DESKTOP_LAYER: u32 = 0x11;
+    pub const GUIDELINE: u32 = 0x16;
+    pub const PLACEHOLDER: u32 = 0x1f;
 }

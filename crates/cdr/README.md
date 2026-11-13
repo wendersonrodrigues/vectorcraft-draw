@@ -28,7 +28,7 @@ see "Not read yet".
 | Layers (`LIST layr`, name in UTF-16); guide, desktop and grid layers are left out | layers (same name on several pages: one layer) |
 | Groups (`LIST grp `) | groups |
 | Curves (object type 3): nodes with move, line, cubic and close flags | paths |
-| Rectangles (object type 1): width and height through the object's transform; per-corner radii as a share of half the shorter side | paths with round corners (scalloped and chamfered corners drawn round) |
+| Rectangles (object type 1): width and height through the object's transform; per-corner radii as a share of half the shorter side | paths with round corners |
 | Bitmaps (object type 5): a box in object space and the id of a `bmp ` record (`LIST bmpt`, data in `Bitmaps.dat`): 24-bit BGR rows bottom first, optional 8-bit mask | embedded PNG images with transparency, placed through the object's transform |
 | Text (object type 4, `txsm`): base and character styles as JSON (font, weight, italic, size, fill, outline), per-character style indices, Windows-1252 characters, `\r` between paragraphs, line and character spacing | point type with styled runs, the first baseline at the object's origin |
 | Transforms (`trfd`: a, b, tx, c, d, ty) | applied to the geometry |
@@ -40,8 +40,9 @@ only when rows are read bottom first, its colours are right only as blue-green-r
 cuts out the background, and the box through the object's transform lands on the object's
 recorded bounding box to within one unit.
 
-A rectangle's geometry is 16 f64: width, height, the transform's scale twice, then three per
-corner (style, radius, one more), the corners listed from `(w, 0)`. The sample's price box has
+A rectangle's geometry is width, height and the transform's scale twice (f64), then 24 bytes per
+corner: 8 bytes the same for every corner of the rectangle, the radius (f64), the same 8 bytes
+again; the corners are listed from `(w, 0)`. The sample's price box has
 three corners at 0.72066 and one at 0; the preview shows it square at `(w, h)`, and its round
 corners' radius, fitted to the preview's pixels, is 19.2 pixels against the 19.06 that 0.72066
 of half the shorter side gives.
@@ -62,6 +63,11 @@ of half the object's longer side. That reading was checked against the page prev
 saves in the package (`previews/page1.png`): rendered at the preview's size, the background
 matches it within two levels per channel wherever no text or bitmap covers it.
 
+Two object types are left out on purpose: guidelines (type 22; lines across the whole desktop on
+the guides layer, outline width 1) and type 31 objects with no geometry, a 4-unit box and only an
+XML namespace as data (two sat on top of the sample's icon groups; the preview shows nothing
+there). A type 31 object with a real size is still listed as not read.
+
 Coordinates are 254 000 units to the inch (0.1 µm), y up, origin at the page centre. That unit is
 an inference (it makes the sample's page 98 × 100 cm and the master page's desktop 1800 inches
 tall); no file seen states it.
@@ -71,7 +77,7 @@ tall); no file seen states it.
 Paragraph alignment, indents and frame (paragraph) text (none in the sample), text on a path,
 fountain fills on text (their first colour), bitmaps of other colour depths (only 24-bit colour with an 8-bit mask has
 been seen), other object types (22, 31…),
-which of a rectangle's first and third corners is which (they shared a radius in the sample), corner styles other than round, ellipses and polygons as their own types, fountain fill intermediate
+which of a rectangle's first and third corners is which (they shared a radius in the sample), where corner styles (scalloped, chamfered) are kept (every corner is drawn round), ellipses and polygons as their own types, fountain fill intermediate
 colours, steps, `xScale`/`yScale` and the linear fill's colour order (inferred: first colour at the
 start), pattern and texture
 fills, dashes, arrows, effects, and older files that are one RIFF file instead of a

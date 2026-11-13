@@ -325,3 +325,32 @@ fn square_rectangles_have_four_sides_and_no_empty_one() {
     let Kind::Path { subpaths, .. } = &d.pages[0].layers[0].objects[0].kind else { panic!() };
     assert_eq!(subpaths[0].segments.len(), 3, "the fourth side is the close");
 }
+
+/// An object with a recorded box (`bbox`), as CorelDRAW writes every object.
+fn boxed(loda_: Vec<u8>, bbox: [i32; 4]) -> synth::Chunk {
+    let b: Vec<u8> = bbox.iter().flat_map(|v| v.to_le_bytes()).collect();
+    synth::list(b"obj ", vec![synth::leaf(b"bbox", b), synth::list(b"lgob", vec![synth::leaf(b"loda", loda_)])])
+}
+
+#[test]
+fn guidelines_and_empty_placeholders_are_not_art_and_not_reported() {
+    use synth::{layer, leaf, list, mcfg, package, page};
+    let guide = boxed(loda(22, &[(0x1e, vec![0; 12])]), [100, 228_600_000, 104, -228_600_000]);
+    let tiny = boxed(loda(31, &[(0x9c44, vec![0; 16])]), [-2, 2, 2, -2]);
+    let f = package(vec![
+        list(b"doc ", vec![leaf(b"mcfg", mcfg(9_800_000, 10_000_000))]),
+        page(vec![]),
+        page(vec![layer(0x0c, "Guides", vec![guide]), layer(0, "Layer 1", vec![tiny, triangle(solid(0, 0, 0))])]),
+    ]);
+    let d = read(&f, Limits::default()).unwrap();
+    assert!(d.warnings.is_empty(), "{:?}", d.warnings);
+    assert_eq!(d.pages[0].layers.len(), 1);
+    assert_eq!(d.pages[0].layers[0].objects.len(), 1, "only the triangle");
+}
+
+#[test]
+fn a_placeholder_with_a_real_size_is_still_reported() {
+    let big = boxed(loda(31, &[(0x9c44, vec![0; 16])]), [0, 100_000, 100_000, 0]);
+    let d = read(&synth::simple(vec![big]), Limits::default()).unwrap();
+    assert_eq!(d.warnings, vec!["objects of a kind not read yet (type 31)".to_string()]);
+}

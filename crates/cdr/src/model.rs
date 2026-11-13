@@ -279,13 +279,15 @@ impl<'t, 'a> Builder<'t, 'a> {
             for layr in gobj.children().iter().filter(|c| c.is_list(b"layr")) {
                 let a = layr.list(b"lgob").and_then(|l| l.leaf(b"loda")).map(Args::parse).transpose()?;
                 let ty = a.as_ref().map(|a| a.object).unwrap_or(object::LAYER);
-                let objects = self.objects(layr, 0)?;
+                // Guidelines (object type 22, lines across the whole desktop), the grid and the
+                // desktop aren't page art: their objects aren't read.
                 if matches!(ty, object::GUIDE_LAYER | object::DESKTOP_LAYER | object::GRID_LAYER) {
-                    if !objects.is_empty() && ty == object::DESKTOP_LAYER {
+                    if ty == object::DESKTOP_LAYER && layr.children().iter().any(|c| c.is_list(b"obj ") || c.is_list(b"grp ")) {
                         self.warnings.add("objects on the desktop, outside the pages");
                     }
                     continue;
                 }
+                let objects = self.objects(layr, 0)?;
                 let name = a
                     .as_ref()
                     .and_then(|a| a.get(kind::NAME))
@@ -342,12 +344,8 @@ impl<'t, 'a> Builder<'t, 'a> {
                     self.warnings.add("a rectangle without a size");
                     return Ok(None);
                 };
-                let corners: [(f64, f64); 4] =
-                    std::array::from_fn(|i| (f64_at(g, 32 + 24 * i).unwrap_or(0.0), f64_at(g, 40 + 24 * i).unwrap_or(0.0)));
-                if corners.iter().any(|&(style, r)| style != 0.0 && r != 0.0) {
-                    self.warnings.add("scalloped and chamfered rectangle corners, drawn round");
-                }
-                rectangle(w, h, corners.map(|c| c.1))
+                let radii: [f64; 4] = std::array::from_fn(|i| f64_at(g, 40 + 24 * i).unwrap_or(0.0));
+                rectangle(w, h, radii)
             }
             (object::TEXT, _) => {
                 let Some(t) = obj.leaf(b"txsm") else {
@@ -376,6 +374,11 @@ impl<'t, 'a> Builder<'t, 'a> {
                 self.warnings.add("bitmaps whose placement couldn't be read");
                 return Ok(None);
             }
+            // Type 31 objects seen so far have no geometry, a 4-unit box (0.4 µm) and only an XML
+            // namespace as data: nothing to draw.
+            (object::PLACEHOLDER, None) if bbox_span(obj).is_some_and(|s| s <= 16.0) => return Ok(None),
+            // Guidelines on an ordinary layer don't print either.
+            (object::GUIDELINE, _) => return Ok(None),
             (t, _) => {
                 self.warnings.add(&format!("objects of a kind not read yet (type {t})"));
                 return Ok(None);
@@ -517,8 +520,9 @@ impl<'t, 'a> Builder<'t, 'a> {
 /// corners rounded by `radii`.
 ///
 /// A rectangle's geometry is 16 f64: width, height, the scale of its transform (twice), then
-/// three per corner (a style, 0 for round; the radius as a share of half the shorter side; one
-/// more, 0 so far). The corners are listed from `(w, 0)` on: `(w, 0)`, `(w, h)`, `(0, h)`,
+/// 24 bytes per corner (8 bytes that are the same for every corner of a rectangle, the radius as
+/// an f64 share of half the shorter side, the same 8 bytes again). Where CorelDRAW keeps a
+/// corner's style (round, scalloped, chamfered) isn't known: every corner is drawn round. The corners are listed from `(w, 0)` on: `(w, 0)`, `(w, h)`, `(0, h)`,
 /// `(0, 0)`. In the one rounded rectangle seen, the second corner is the only square one, and
 /// the preview shows `(w, h)` square; the first and third weren't told apart (they share a
 /// radius). The radius was measured on the same preview: 19.2 pixels against the 19.06 this
@@ -562,6 +566,13 @@ fn rectangle(w: f64, h: f64, radii: [f64; 4]) -> Vec<(f64, f64, u8)> {
         last.2 |= 0x08;
     }
     out
+}
+
+/// The larger side of the box an object records (`bbox`: four i32), in units.
+fn bbox_span(obj: &Node<'_>) -> Option<f64> {
+    let b = obj.leaf(b"bbox")?;
+    let [x0, y0, x1, y1] = [i32_at(b, 0)?, i32_at(b, 4)?, i32_at(b, 8)?, i32_at(b, 12)?].map(f64::from);
+    Some((x1 - x0).abs().max((y1 - y0).abs()))
 }
 
 /// A `trfd`: 40 header bytes, then six f64 `(a, b, tx, c, d, ty)`.
